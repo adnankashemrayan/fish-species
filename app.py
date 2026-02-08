@@ -32,32 +32,21 @@ class SimCLREncoder(nn.Module):
         super().__init__()
         base = models.resnet50(weights=None)
         base.fc = nn.Identity()
-        self.encoder = base
+        self.backbone = base
 
     def forward(self, x):
-        x = self.encoder(x)
-        return x  # (B, 2048)
+        return self.backbone(x)  # (B, 2048)
 
-# ------------------ Classifier ------------------
-class Classifier(nn.Module):
-    def __init__(self, num_classes):
-        super().__init__()
-        self.fc = nn.Linear(2048, num_classes)
-
-    def forward(self, x):
-        return self.fc(x)
-
-# ------------------ Safe State Dict Loader ------------------
-def load_weights_safely(model, state_dict):
-    new_state = {}
+# ------------------ Safe Loader ------------------
+def safe_load(model, state_dict):
+    cleaned = {}
     for k, v in state_dict.items():
         if k.startswith("module."):
             k = k.replace("module.", "")
         if k.startswith("encoder."):
             k = k.replace("encoder.", "")
-        new_state[k] = v
-
-    model.load_state_dict(new_state, strict=False)
+        cleaned[k] = v
+    model.load_state_dict(cleaned, strict=False)
 
 # ------------------ Download & Load Models ------------------
 @st.cache_resource(show_spinner=True)
@@ -75,14 +64,15 @@ def download_and_load_models():
         repo_type="dataset"
     )
 
+    # Encoder
     encoder = SimCLREncoder()
-    classifier = Classifier(NUM_CLASSES)
-
     encoder_sd = torch.load(encoder_path, map_location="cpu")
-    classifier_sd = torch.load(classifier_path, map_location="cpu")
+    safe_load(encoder.backbone, encoder_sd)
 
-    load_weights_safely(encoder.encoder, encoder_sd)
-    classifier.load_state_dict(classifier_sd)
+    # Classifier (IMPORTANT FIX)
+    classifier = nn.Linear(2048, NUM_CLASSES)
+    classifier_sd = torch.load(classifier_path, map_location="cpu")
+    classifier.load_state_dict(classifier_sd, strict=False)
 
     encoder.eval()
     classifier.eval()
