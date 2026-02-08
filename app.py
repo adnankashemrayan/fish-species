@@ -29,7 +29,7 @@ def inject_css(image_path):
           linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0.72)),
           url("data:image/png;base64,{encoded}");
         """
-    except FileNotFoundError:
+    except Exception:
         bg_css = """
         background:
           linear-gradient(135deg, #0f2027, #203a43, #2c5364);
@@ -106,7 +106,7 @@ with st.sidebar:
     **Model**
     - SimCLR (Self-Supervised)
     - ResNet50 Encoder
-    - Linear Evaluation
+    - Linear / Custom Classifier
 
     **Developer**
     **Riad**
@@ -145,14 +145,14 @@ CLASS_NAMES = [
     "Common Carp","Kaikka","Koral","Shrimp","Unknown"
 ]
 
-NUM_CLASSES = len(CLASS_NAMES)
 FEATURE_DIM = 2048
 
 # ==================================================
-# LOAD MODELS (ROBUST)
+# LOAD MODELS (ULTRA ROBUST)
 # ==================================================
 @st.cache_resource(show_spinner=False)
 def load_models():
+    # -------- Download from HF DATASET repo --------
     encoder_path = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
         filename="fish_simclr_encoder.pt",
@@ -170,36 +170,55 @@ def load_models():
     encoder = nn.Sequential(*list(base.children())[:-1]).to(DEVICE)
 
     enc_ckpt = torch.load(encoder_path, map_location=DEVICE)
-    clean = {}
+    clean_state = {}
     for k, v in enc_ckpt.items():
         k = k.replace("encoder.", "").replace("backbone.", "").replace("module.", "")
-        clean[k] = v
+        clean_state[k] = v
 
-    encoder.load_state_dict(clean, strict=False)
+    encoder.load_state_dict(clean_state, strict=False)
     encoder.eval()
 
-    # -------- Classifier (UNIVERSAL LOAD) --------
-    classifier = nn.Linear(FEATURE_DIM, NUM_CLASSES).to(DEVICE)
+    # -------- Classifier (AUTO-INFER SHAPE) --------
     cls_ckpt = torch.load(classifier_path, map_location=DEVICE)
 
-    if isinstance(cls_ckpt, dict):
-        if "state_dict" in cls_ckpt:
-            classifier.load_state_dict(cls_ckpt["state_dict"])
-        elif "model_state" in cls_ckpt:
-            classifier.load_state_dict(cls_ckpt["model_state"])
-        else:
-            classifier.load_state_dict(cls_ckpt)
-    else:
+    # Case: full model saved
+    if isinstance(cls_ckpt, nn.Module):
         classifier = cls_ckpt.to(DEVICE)
+
+    else:
+        # extract state_dict
+        if isinstance(cls_ckpt, dict):
+            if "state_dict" in cls_ckpt:
+                state = cls_ckpt["state_dict"]
+            elif "model_state" in cls_ckpt:
+                state = cls_ckpt["model_state"]
+            else:
+                state = cls_ckpt
+        else:
+            state = cls_ckpt
+
+        # infer output features
+        out_features = None
+        for k, v in state.items():
+            if v.ndim == 2:
+                out_features = v.shape[0]
+                break
+
+        if out_features is None:
+            raise RuntimeError("Cannot infer classifier output size")
+
+        classifier = nn.Linear(FEATURE_DIM, out_features).to(DEVICE)
+        classifier.load_state_dict(state, strict=False)
 
     classifier.eval()
 
-    # Warm-up
+    # -------- Warm-up --------
     with torch.no_grad():
         dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
         _ = classifier(encoder(dummy).view(1, -1))
 
     return encoder, classifier
+
 
 encoder, classifier = load_models()
 
@@ -216,7 +235,7 @@ transform = transforms.Compose([
 ])
 
 # ==================================================
-# PREDICT
+# PREDICTION
 # ==================================================
 def predict_topk(img, k=3):
     img = transform(img).unsqueeze(0).to(DEVICE)
@@ -225,8 +244,11 @@ def predict_topk(img, k=3):
         probs = torch.softmax(classifier(feat), dim=1)[0]
 
     topk = torch.topk(probs, k)
-    return [(CLASS_NAMES[i], float(topk.values[idx]*100))
-            for idx, i in enumerate(topk.indices)]
+    results = []
+    for idx, i in enumerate(topk.indices):
+        label = CLASS_NAMES[i] if i < len(CLASS_NAMES) else f"Class {i}"
+        results.append((label, float(topk.values[idx] * 100)))
+    return results
 
 # ==================================================
 # HEADER
