@@ -1,10 +1,11 @@
 import streamlit as st
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import json
 import os
 from PIL import Image
-from torchvision import transforms
-import torch.nn.functional as F
+from torchvision import transforms, models
 from huggingface_hub import hf_hub_download
 
 # ------------------ Page Config ------------------
@@ -17,31 +18,60 @@ st.set_page_config(
 st.title("🐟 Fish Species Classification System")
 st.caption("SimCLR Encoder + Deep Learning Classifier")
 
-# ------------------ Paths ------------------
-MODEL_DIR = "models"
-ENCODER_PATH = os.path.join(MODEL_DIR, "fish_simclr_encoder.pt")
-CLASSIFIER_PATH = os.path.join(MODEL_DIR, "fish_final_model.pt")
+# ------------------ Load Class Names FIRST ------------------
+@st.cache_resource
+def load_class_names():
+    with open("models/class_names.json", "r") as f:
+        return json.load(f)
 
-os.makedirs(MODEL_DIR, exist_ok=True)
+class_names = load_class_names()
+NUM_CLASSES = len(class_names)
 
-# ------------------ Download Models ------------------
+# ------------------ Model Architectures ------------------
+class SimCLREncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+        base = models.resnet50(weights=None)
+        self.encoder = nn.Sequential(*list(base.children())[:-1])
+
+    def forward(self, x):
+        x = self.encoder(x)
+        return x.view(x.size(0), -1)  # (B, 2048)
+
+
+class Classifier(nn.Module):
+    def __init__(self, num_classes):
+        super().__init__()
+        self.fc = nn.Linear(2048, num_classes)
+
+    def forward(self, x):
+        return self.fc(x)
+
+# ------------------ Download & Load Models ------------------
 @st.cache_resource(show_spinner=True)
 def download_and_load_models():
-    # Download from HF Dataset repo
-    encoder_file = hf_hub_download(
+
+    encoder_path = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
         filename="fish_simclr_encoder.pt",
         repo_type="dataset"
     )
 
-    classifier_file = hf_hub_download(
+    classifier_path = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
         filename="fish_final_model.pt",
         repo_type="dataset"
     )
 
-    encoder = torch.load(encoder_file, map_location="cpu")
-    classifier = torch.load(classifier_file, map_location="cpu")
+    encoder = SimCLREncoder()
+    classifier = Classifier(NUM_CLASSES)
+
+    encoder.load_state_dict(
+        torch.load(encoder_path, map_location="cpu")
+    )
+    classifier.load_state_dict(
+        torch.load(classifier_path, map_location="cpu")
+    )
 
     encoder.eval()
     classifier.eval()
@@ -49,14 +79,6 @@ def download_and_load_models():
     return encoder, classifier
 
 encoder, classifier = download_and_load_models()
-
-# ------------------ Load Class Names ------------------
-@st.cache_resource
-def load_class_names():
-    with open("models/class_names.json", "r") as f:
-        return json.load(f)
-
-class_names = load_class_names()
 
 # ------------------ Image Preprocessing ------------------
 transform = transforms.Compose([
@@ -68,7 +90,7 @@ transform = transforms.Compose([
     )
 ])
 
-# ------------------ Prediction ------------------
+# ------------------ Prediction Function ------------------
 def predict(image):
     image = transform(image).unsqueeze(0)
 
@@ -85,6 +107,7 @@ def predict(image):
             "label": class_names[i.item()],
             "confidence": p.item() * 100
         })
+
     return results
 
 # ------------------ UI ------------------
@@ -99,17 +122,20 @@ if uploaded_file:
         st.image(image, caption="Uploaded Image", use_container_width=True)
 
         with st.spinner("🔍 Analyzing image..."):
-            preds = predict(image)
+            predictions = predict(image)
 
         st.success("✅ Prediction Successful")
 
         st.subheader("🎯 Predicted Species")
         st.markdown(
-            f"**{preds[0]['label']}**  \nConfidence: **{preds[0]['confidence']:.2f}%**"
+            f"""
+            **{predictions[0]['label']}**  
+            Confidence: **{predictions[0]['confidence']:.2f}%**
+            """
         )
 
         st.subheader("📊 Top-3 Predictions")
-        for i, p in enumerate(preds, 1):
+        for i, p in enumerate(predictions, 1):
             st.write(f"{i}. {p['label']} — {p['confidence']:.2f}%")
 
     except Exception as e:
