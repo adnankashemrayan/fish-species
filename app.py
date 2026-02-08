@@ -17,11 +17,23 @@ st.set_page_config(
 )
 
 # ==================================================
-# GLOBAL STYLES (INDUSTRY UI)
+# GLOBAL STYLES (FAIL-SAFE)
 # ==================================================
 def inject_css(image_path):
-    with open(image_path, "rb") as f:
-        encoded = base64.b64encode(f.read()).decode()
+    try:
+        with open(image_path, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+
+        bg_css = f"""
+        background:
+          linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0.72)),
+          url("data:image/png;base64,{encoded}");
+        """
+    except FileNotFoundError:
+        bg_css = """
+        background:
+          linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+        """
 
     st.markdown(
         f"""
@@ -31,9 +43,7 @@ def inject_css(image_path):
         }}
 
         .stApp {{
-            background:
-              linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0.72)),
-              url("data:image/png;base64,{encoded}");
+            {bg_css}
             background-size: cover;
             background-position: center;
             background-attachment: fixed;
@@ -87,7 +97,6 @@ inject_css("assets/watermark.png")
 # ==================================================
 with st.sidebar:
     st.markdown("## 🐟 Fish AI Platform")
-
     language = st.selectbox("🌐 Language", ["English", "বাংলা"])
     enable_explain = st.checkbox("🔬 Enable Explainability (Grad-CAM)", False)
     enable_report = st.checkbox("📄 Enable PDF Report", False)
@@ -99,17 +108,12 @@ with st.sidebar:
     - ResNet50 Encoder
     - Linear Evaluation
 
-    **Use Cases**
-    - Fisheries research
-    - Education & labs
-    - AI product demos
-
     **Developer**
     **Riad**
     """)
 
 # ==================================================
-# TEXT (LANGUAGE SUPPORT)
+# TEXT
 # ==================================================
 TEXT = {
     "English": {
@@ -127,7 +131,6 @@ TEXT = {
         "results": "পূর্বাভাসের ফলাফল"
     }
 }
-
 T = TEXT[language]
 
 # ==================================================
@@ -146,7 +149,7 @@ NUM_CLASSES = len(CLASS_NAMES)
 FEATURE_DIM = 2048
 
 # ==================================================
-# LOAD MODELS (HF DATASET REPO)
+# LOAD MODELS (ROBUST)
 # ==================================================
 @st.cache_resource(show_spinner=False)
 def load_models():
@@ -162,23 +165,33 @@ def load_models():
         repo_type="dataset"
     )
 
+    # -------- Encoder --------
     base = models.resnet50(weights=None)
     encoder = nn.Sequential(*list(base.children())[:-1]).to(DEVICE)
 
-    state = torch.load(encoder_path, map_location=DEVICE)
-    clean_state = {}
-    for k, v in state.items():
+    enc_ckpt = torch.load(encoder_path, map_location=DEVICE)
+    clean = {}
+    for k, v in enc_ckpt.items():
         k = k.replace("encoder.", "").replace("backbone.", "").replace("module.", "")
-        clean_state[k] = v
+        clean[k] = v
 
-    encoder.load_state_dict(clean_state, strict=False)
+    encoder.load_state_dict(clean, strict=False)
     encoder.eval()
 
-    classifier = nn.Linear(FEATURE_DIM, NUM_CLASSES)
-    classifier.load_state_dict(
-        torch.load(classifier_path, map_location=DEVICE)
-    )
-    classifier.to(DEVICE)
+    # -------- Classifier (UNIVERSAL LOAD) --------
+    classifier = nn.Linear(FEATURE_DIM, NUM_CLASSES).to(DEVICE)
+    cls_ckpt = torch.load(classifier_path, map_location=DEVICE)
+
+    if isinstance(cls_ckpt, dict):
+        if "state_dict" in cls_ckpt:
+            classifier.load_state_dict(cls_ckpt["state_dict"])
+        elif "model_state" in cls_ckpt:
+            classifier.load_state_dict(cls_ckpt["model_state"])
+        else:
+            classifier.load_state_dict(cls_ckpt)
+    else:
+        classifier = cls_ckpt.to(DEVICE)
+
     classifier.eval()
 
     # Warm-up
@@ -187,7 +200,6 @@ def load_models():
         _ = classifier(encoder(dummy).view(1, -1))
 
     return encoder, classifier
-
 
 encoder, classifier = load_models()
 
@@ -204,7 +216,7 @@ transform = transforms.Compose([
 ])
 
 # ==================================================
-# PREDICTION
+# PREDICT
 # ==================================================
 def predict_topk(img, k=3):
     img = transform(img).unsqueeze(0).to(DEVICE)
@@ -222,9 +234,7 @@ def predict_topk(img, k=3):
 st.markdown(f"""
 <div style="text-align:center;">
     <h1 style="font-size:48px;">🐟 {T["title"]}</h1>
-    <p style="font-size:18px; color:#dddddd;">
-        {T["subtitle"]}
-    </p>
+    <p style="font-size:18px; color:#dddddd;">{T["subtitle"]}</p>
 </div>
 <hr style="margin:32px 0;">
 """, unsafe_allow_html=True)
@@ -251,10 +261,10 @@ if file:
                 st.caption(f"Confidence: {conf:.2f}%")
 
             if enable_explain:
-                st.info("🔬 Grad-CAM enabled (hook ready – add visualization module).")
+                st.info("🔬 Grad-CAM enabled (hook ready).")
 
             if enable_report:
-                st.info("📄 PDF report enabled (hook ready – generate inference report).")
+                st.info("📄 PDF report enabled (hook ready).")
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
