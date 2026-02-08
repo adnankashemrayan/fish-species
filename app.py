@@ -4,6 +4,7 @@ import torch.nn as nn
 from torchvision import transforms, models
 from PIL import Image
 from huggingface_hub import hf_hub_download
+import base64
 
 # ==================================================
 # PAGE CONFIG
@@ -11,8 +12,123 @@ from huggingface_hub import hf_hub_download
 st.set_page_config(
     page_title="Fish Species Detection",
     page_icon="🐟",
-    layout="centered"
+    layout="centered",
+    initial_sidebar_state="collapsed"
 )
+
+# ==================================================
+# GLOBAL STYLES (INDUSTRY UI)
+# ==================================================
+def inject_css(image_path):
+    with open(image_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+
+    st.markdown(
+        f"""
+        <style>
+        html, body {{
+            font-family: 'Inter', sans-serif;
+        }}
+
+        .stApp {{
+            background:
+              linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0.72)),
+              url("data:image/png;base64,{encoded}");
+            background-size: cover;
+            background-position: center;
+            background-attachment: fixed;
+        }}
+
+        .block-container {{
+            max-width: 800px;
+            background: rgba(255,255,255,0.12);
+            backdrop-filter: blur(24px);
+            padding: 3.6rem;
+            border-radius: 28px;
+            border: 1px solid rgba(255,255,255,0.25);
+            box-shadow: 0 35px 100px rgba(0,0,0,0.65);
+        }}
+
+        button {{
+            width: 100%;
+            height: 3.5em;
+            border-radius: 18px !important;
+            font-size: 18px !important;
+            font-weight: 600;
+            background: linear-gradient(135deg,#00c6ff,#0072ff);
+            color: white !important;
+            border: none;
+        }}
+
+        button:hover {{
+            transform: scale(1.03);
+            transition: 0.25s ease;
+        }}
+
+        section[data-testid="stFileUploader"] {{
+            background: rgba(0,0,0,0.45);
+            border-radius: 18px;
+            padding: 22px;
+            border: 1px dashed rgba(255,255,255,0.45);
+        }}
+
+        .stProgress > div > div {{
+            background-image: linear-gradient(90deg,#00c6ff,#0072ff);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
+
+inject_css("assets/watermark.png")
+
+# ==================================================
+# SIDEBAR
+# ==================================================
+with st.sidebar:
+    st.markdown("## 🐟 Fish AI Platform")
+
+    language = st.selectbox("🌐 Language", ["English", "বাংলা"])
+    enable_explain = st.checkbox("🔬 Enable Explainability (Grad-CAM)", False)
+    enable_report = st.checkbox("📄 Enable PDF Report", False)
+
+    st.markdown("""
+    ---
+    **Model**
+    - SimCLR (Self-Supervised)
+    - ResNet50 Encoder
+    - Linear Evaluation
+
+    **Use Cases**
+    - Fisheries research
+    - Education & labs
+    - AI product demos
+
+    **Developer**
+    **Riad**
+    """)
+
+# ==================================================
+# TEXT (LANGUAGE SUPPORT)
+# ==================================================
+TEXT = {
+    "English": {
+        "title": "Fish Species Detection",
+        "subtitle": "Industry-Grade AI Fish Classification Platform",
+        "upload": "📤 Upload a fish image",
+        "analyze": "🔍 Analyze Image",
+        "results": "Prediction Results"
+    },
+    "বাংলা": {
+        "title": "মাছের প্রজাতি শনাক্তকরণ",
+        "subtitle": "ইন্ডাস্ট্রি-গ্রেড AI ফিশ ক্লাসিফিকেশন সিস্টেম",
+        "upload": "📤 মাছের ছবি আপলোড করুন",
+        "analyze": "🔍 ছবি বিশ্লেষণ করুন",
+        "results": "পূর্বাভাসের ফলাফল"
+    }
+}
+
+T = TEXT[language]
 
 # ==================================================
 # CONFIG
@@ -20,46 +136,44 @@ st.set_page_config(
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 CLASS_NAMES = [
-    "Baim", "Bata", "Batasio (Tenra)", "Chitol", "Croaker (Poya)",
-    "Hilsha", "Kajoli", "Meni", "Pabda", "Poli", "Puti",
-    "Rita", "Rui", "Rupchada", "Silver Carp", "Tilapia",
-    "Common Carp", "Kaikka", "Koral", "Shrimp", "Unknown"
+    "Baim","Bata","Batasio (Tenra)","Chitol","Croaker (Poya)",
+    "Hilsha","Kajoli","Meni","Pabda","Poli","Puti",
+    "Rita","Rui","Rupchada","Silver Carp","Tilapia",
+    "Common Carp","Kaikka","Koral","Shrimp","Unknown"
 ]
 
 NUM_CLASSES = len(CLASS_NAMES)
 FEATURE_DIM = 2048
 
 # ==================================================
-# LOAD MODELS FROM HUGGING FACE
+# LOAD MODELS (HF DATASET REPO)
 # ==================================================
-@st.cache_resource(show_spinner=True)
+@st.cache_resource(show_spinner=False)
 def load_models():
-    # Download checkpoints
     encoder_path = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
-        filename="fish_simclr_encoder.pt"
+        filename="fish_simclr_encoder.pt",
+        repo_type="dataset"
     )
 
     classifier_path = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
-        filename="fish_final_model.pt"
+        filename="fish_final_model.pt",
+        repo_type="dataset"
     )
 
-    # Encoder (ResNet50 backbone)
     base = models.resnet50(weights=None)
     encoder = nn.Sequential(*list(base.children())[:-1]).to(DEVICE)
 
-    encoder_state = torch.load(encoder_path, map_location=DEVICE)
-
+    state = torch.load(encoder_path, map_location=DEVICE)
     clean_state = {}
-    for k, v in encoder_state.items():
+    for k, v in state.items():
         k = k.replace("encoder.", "").replace("backbone.", "").replace("module.", "")
         clean_state[k] = v
 
     encoder.load_state_dict(clean_state, strict=False)
     encoder.eval()
 
-    # Classifier
     classifier = nn.Linear(FEATURE_DIM, NUM_CLASSES)
     classifier.load_state_dict(
         torch.load(classifier_path, map_location=DEVICE)
@@ -70,8 +184,7 @@ def load_models():
     # Warm-up
     with torch.no_grad():
         dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
-        feat = encoder(dummy).view(1, -1)
-        _ = classifier(feat)
+        _ = classifier(encoder(dummy).view(1, -1))
 
     return encoder, classifier
 
@@ -79,71 +192,69 @@ def load_models():
 encoder, classifier = load_models()
 
 # ==================================================
-# IMAGE TRANSFORM
+# TRANSFORM
 # ==================================================
 transform = transforms.Compose([
-    transforms.Resize((224, 224)),
+    transforms.Resize((224,224)),
     transforms.ToTensor(),
     transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
+        [0.485,0.456,0.406],
+        [0.229,0.224,0.225]
     )
 ])
 
 # ==================================================
-# PREDICTION FUNCTION
+# PREDICTION
 # ==================================================
-def predict_topk(image, k=3):
-    image = transform(image).unsqueeze(0).to(DEVICE)
-
+def predict_topk(img, k=3):
+    img = transform(img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        feat = encoder(image).view(1, -1)
-        logits = classifier(feat)
-        probs = torch.softmax(logits, dim=1)[0]
+        feat = encoder(img).view(1,-1)
+        probs = torch.softmax(classifier(feat), dim=1)[0]
 
     topk = torch.topk(probs, k)
-
-    results = []
-    for idx, cls_idx in enumerate(topk.indices):
-        results.append(
-            (CLASS_NAMES[cls_idx], float(topk.values[idx] * 100))
-        )
-
-    return results
+    return [(CLASS_NAMES[i], float(topk.values[idx]*100))
+            for idx, i in enumerate(topk.indices)]
 
 # ==================================================
-# UI
+# HEADER
 # ==================================================
-st.markdown(
-    "<h1 style='text-align:center;'>🐟 Fish Species Detection</h1>",
-    unsafe_allow_html=True
-)
-st.markdown(
-    "<p style='text-align:center;color:gray;'>SimCLR + ResNet50 based Fish Classification</p>",
-    unsafe_allow_html=True
-)
-st.markdown("---")
+st.markdown(f"""
+<div style="text-align:center;">
+    <h1 style="font-size:48px;">🐟 {T["title"]}</h1>
+    <p style="font-size:18px; color:#dddddd;">
+        {T["subtitle"]}
+    </p>
+</div>
+<hr style="margin:32px 0;">
+""", unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader(
-    "📤 Upload a fish image",
-    type=["jpg", "jpeg", "png"]
-)
+# ==================================================
+# MAIN APP
+# ==================================================
+file = st.file_uploader(T["upload"], type=["jpg","jpeg","png"])
 
-if uploaded_file is not None:
+if file:
     try:
-        image = Image.open(uploaded_file).convert("RGB")
+        image = Image.open(file).convert("RGB")
         st.image(image, caption="Uploaded Image", use_column_width=True)
 
-        if st.button("🔍 Analyze Image"):
-            with st.spinner("Analyzing image..."):
+        if st.button(T["analyze"]):
+            with st.spinner("Running deep visual analysis..."):
                 results = predict_topk(image)
 
-            st.markdown("## 🧠 Prediction Results")
+            st.markdown(f"## 🧠 {T['results']}")
 
-            for label, confidence in results:
+            for label, conf in results:
                 st.markdown(f"**{label}**")
-                st.progress(int(confidence))
-                st.caption(f"Confidence: {confidence:.2f}%")
+                st.progress(int(conf))
+                st.caption(f"Confidence: {conf:.2f}%")
+
+            if enable_explain:
+                st.info("🔬 Grad-CAM enabled (hook ready – add visualization module).")
+
+            if enable_report:
+                st.info("📄 PDF report enabled (hook ready – generate inference report).")
 
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
@@ -151,12 +262,11 @@ if uploaded_file is not None:
 # ==================================================
 # FOOTER
 # ==================================================
-st.markdown("---")
-st.markdown(
-    "<p style='text-align:center;font-size:13px;color:gray;'>"
-    "© 2026 · Fish AI Classification Platform<br>"
-    "Built with PyTorch · SimCLR · Streamlit<br>"
-    "Developed by <b>Riad</b>"
-    "</p>",
-    unsafe_allow_html=True
-)
+st.markdown("""
+<hr style="margin-top:50px;">
+<p style="text-align:center; color:#cfcfcf; font-size:14px;">
+© 2026 · Fish AI Classification Platform<br>
+Built with PyTorch · SimCLR · Streamlit<br>
+Developed by <b>Riad</b>
+</p>
+""", unsafe_allow_html=True)
