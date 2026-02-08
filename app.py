@@ -1,87 +1,86 @@
 import streamlit as st
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import json
-from PIL import Image
 from torchvision import transforms, models
+from PIL import Image
 from huggingface_hub import hf_hub_download
 
-# ------------------ Page Config ------------------
+# ==================================================
+# PAGE CONFIG
+# ==================================================
 st.set_page_config(
-    page_title="Fish Species Classifier",
+    page_title="Fish Species Detection",
     page_icon="🐟",
     layout="centered"
 )
 
-st.title("🐟 Fish Species Classification System")
-st.caption("SimCLR Encoder + Deep Learning Classifier")
+# ==================================================
+# CONFIG
+# ==================================================
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ------------------ Load Class Names ------------------
-@st.cache_resource
-def load_class_names():
-    with open("models/class_names.json", "r") as f:
-        return json.load(f)
+CLASS_NAMES = [
+    "Baim", "Bata", "Batasio (Tenra)", "Chitol", "Croaker (Poya)",
+    "Hilsha", "Kajoli", "Meni", "Pabda", "Poli", "Puti",
+    "Rita", "Rui", "Rupchada", "Silver Carp", "Tilapia",
+    "Common Carp", "Kaikka", "Koral", "Shrimp", "Unknown"
+]
 
-class_names = load_class_names()
-NUM_CLASSES = len(class_names)
+NUM_CLASSES = len(CLASS_NAMES)
+FEATURE_DIM = 2048
 
-# ------------------ Encoder Architecture ------------------
-class SimCLREncoder(nn.Module):
-    def __init__(self):
-        super().__init__()
-        base = models.resnet50(weights=None)
-        base.fc = nn.Identity()
-        self.backbone = base
-
-    def forward(self, x):
-        return self.backbone(x)  # (B, 2048)
-
-# ------------------ Safe Loader ------------------
-def safe_load(model, state_dict):
-    cleaned = {}
-    for k, v in state_dict.items():
-        if k.startswith("module."):
-            k = k.replace("module.", "")
-        if k.startswith("encoder."):
-            k = k.replace("encoder.", "")
-        cleaned[k] = v
-    model.load_state_dict(cleaned, strict=False)
-
-# ------------------ Download & Load Models ------------------
+# ==================================================
+# LOAD MODELS FROM HUGGING FACE
+# ==================================================
 @st.cache_resource(show_spinner=True)
-def download_and_load_models():
-
+def load_models():
+    # Download checkpoints
     encoder_path = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
-        filename="fish_simclr_encoder.pt",
-        repo_type="dataset"
+        filename="fish_simclr_encoder.pt"
     )
 
     classifier_path = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
-        filename="fish_final_model.pt",
-        repo_type="dataset"
+        filename="fish_final_model.pt"
     )
 
-    # Encoder
-    encoder = SimCLREncoder()
-    encoder_sd = torch.load(encoder_path, map_location="cpu")
-    safe_load(encoder.backbone, encoder_sd)
+    # Encoder (ResNet50 backbone)
+    base = models.resnet50(weights=None)
+    encoder = nn.Sequential(*list(base.children())[:-1]).to(DEVICE)
 
-    # Classifier (IMPORTANT FIX)
-    classifier = nn.Linear(2048, NUM_CLASSES)
-    classifier_sd = torch.load(classifier_path, map_location="cpu")
-    classifier.load_state_dict(classifier_sd, strict=False)
+    encoder_state = torch.load(encoder_path, map_location=DEVICE)
 
+    clean_state = {}
+    for k, v in encoder_state.items():
+        k = k.replace("encoder.", "").replace("backbone.", "").replace("module.", "")
+        clean_state[k] = v
+
+    encoder.load_state_dict(clean_state, strict=False)
     encoder.eval()
+
+    # Classifier
+    classifier = nn.Linear(FEATURE_DIM, NUM_CLASSES)
+    classifier.load_state_dict(
+        torch.load(classifier_path, map_location=DEVICE)
+    )
+    classifier.to(DEVICE)
     classifier.eval()
+
+    # Warm-up
+    with torch.no_grad():
+        dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
+        feat = encoder(dummy).view(1, -1)
+        _ = classifier(feat)
 
     return encoder, classifier
 
-encoder, classifier = download_and_load_models()
 
-# ------------------ Preprocessing ------------------
+encoder, classifier = load_models()
+
+# ==================================================
+# IMAGE TRANSFORM
+# ==================================================
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
@@ -91,53 +90,73 @@ transform = transforms.Compose([
     )
 ])
 
-# ------------------ Prediction ------------------
-def predict(image):
-    image = transform(image).unsqueeze(0)
+# ==================================================
+# PREDICTION FUNCTION
+# ==================================================
+def predict_topk(image, k=3):
+    image = transform(image).unsqueeze(0).to(DEVICE)
 
     with torch.no_grad():
-        features = encoder(image)
-        logits = classifier(features)
-        probs = F.softmax(logits, dim=1)
+        feat = encoder(image).view(1, -1)
+        logits = classifier(feat)
+        probs = torch.softmax(logits, dim=1)[0]
 
-    top_probs, top_idxs = probs.topk(3, dim=1)
+    topk = torch.topk(probs, k)
 
-    return [
-        {
-            "label": class_names[i.item()],
-            "confidence": p.item() * 100
-        }
-        for p, i in zip(top_probs[0], top_idxs[0])
-    ]
+    results = []
+    for idx, cls_idx in enumerate(topk.indices):
+        results.append(
+            (CLASS_NAMES[cls_idx], float(topk.values[idx] * 100))
+        )
 
-# ------------------ UI ------------------
+    return results
+
+# ==================================================
+# UI
+# ==================================================
+st.markdown(
+    "<h1 style='text-align:center;'>🐟 Fish Species Detection</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    "<p style='text-align:center;color:gray;'>SimCLR + ResNet50 based Fish Classification</p>",
+    unsafe_allow_html=True
+)
+st.markdown("---")
+
 uploaded_file = st.file_uploader(
-    "Upload a fish image",
+    "📤 Upload a fish image",
     type=["jpg", "jpeg", "png"]
 )
 
-if uploaded_file:
+if uploaded_file is not None:
     try:
         image = Image.open(uploaded_file).convert("RGB")
-        st.image(image, caption="Uploaded Image", use_container_width=True)
+        st.image(image, caption="Uploaded Image", use_column_width=True)
 
-        with st.spinner("🔍 Analyzing image..."):
-            preds = predict(image)
+        if st.button("🔍 Analyze Image"):
+            with st.spinner("Analyzing image..."):
+                results = predict_topk(image)
 
-        st.success("✅ Prediction Successful")
+            st.markdown("## 🧠 Prediction Results")
 
-        st.subheader("🎯 Predicted Species")
-        st.markdown(
-            f"**{preds[0]['label']}**  \nConfidence: **{preds[0]['confidence']:.2f}%"
-        )
-
-        st.subheader("📊 Top-3 Predictions")
-        for i, p in enumerate(preds, 1):
-            st.write(f"{i}. {p['label']} — {p['confidence']:.2f}%")
+            for label, confidence in results:
+                st.markdown(f"**{label}**")
+                st.progress(int(confidence))
+                st.caption(f"Confidence: {confidence:.2f}%")
 
     except Exception as e:
-        st.error("❌ Error processing image")
-        st.exception(e)
+        st.error(f"❌ Error: {str(e)}")
 
+# ==================================================
+# FOOTER
+# ==================================================
 st.markdown("---")
-st.caption("Powered by PyTorch • Hosted on Hugging Face 🤗")
+st.markdown(
+    "<p style='text-align:center;font-size:13px;color:gray;'>"
+    "© 2026 · Fish AI Classification Platform<br>"
+    "Built with PyTorch · SimCLR · Streamlit<br>"
+    "Developed by <b>Riad</b>"
+    "</p>",
+    unsafe_allow_html=True
+)
