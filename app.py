@@ -5,8 +5,6 @@ import torch.nn.functional as F
 import torchvision
 from torchvision import transforms
 from PIL import Image
-from huggingface_hub import hf_hub_download
-import json
 import base64
 
 # ==================================================
@@ -90,20 +88,14 @@ T = TEXT[language]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ==================================================
-# CLASS NAMES - HF JSON
+# MANUAL CLASS NAMES
 # ==================================================
-@st.cache_resource
-def load_class_names():
-    path = hf_hub_download(
-        repo_id="Riad77/fish-species-classifier",
-        filename="class_names.json",
-        repo_type="dataset"
-    )
-    with open(path, "r") as f:
-        names = json.load(f)
-    return names
-
-CLASS_NAMES = load_class_names()
+CLASS_NAMES = [
+    "Baim","Bata","Batasio(Tenra)","Chitul","Croaker(Poya)",
+    "Hilsha","Kajoli","Meni","Pabda","Poli","Puti",
+    "Rita","Rui","Rupchada","Silver Carp","Telapiya",
+    "Carp","K","Kaikka","Koral","Shrimp"
+]
 
 # ==================================================
 # SIMCLR ENCODER CLASS
@@ -130,23 +122,15 @@ class SimCLR(nn.Module):
 @st.cache_resource(show_spinner=False)
 def load_models():
     # --- Encoder
-    encoder_ckpt = hf_hub_download(
-        repo_id="Riad77/fish-species-classifier",
-        filename="fish_simclr_encoder.pt",
-        repo_type="dataset"
-    )
+    encoder_path = "models/fish_simclr_encoder.pt"
     encoder_model = SimCLR()
-    state = torch.load(encoder_ckpt, map_location=DEVICE)
+    state = torch.load(encoder_path, map_location=DEVICE)
     encoder_model.encoder.load_state_dict(state, strict=False)
     encoder_model.eval().to(DEVICE)
 
     # --- Linear classifier
-    cls_ckpt = hf_hub_download(
-        repo_id="Riad77/fish-species-classifier",
-        filename="fish_final_model.pt",
-        repo_type="dataset"
-    )
-    cls_state = torch.load(cls_ckpt, map_location=DEVICE)
+    classifier_path = "models/fish_final_model.pt"
+    cls_state = torch.load(classifier_path, map_location=DEVICE)
     classifier = nn.Linear(2048, len(CLASS_NAMES)).to(DEVICE)
     classifier.load_state_dict(cls_state, strict=False)
     classifier.eval()
@@ -179,8 +163,7 @@ def predict_topk(img, k=3):
         feat = encoder_model.encoder(img_tensor).view(1,-1)
         probs = torch.softmax(classifier(feat), dim=1)[0]
     topk = torch.topk(probs, k)
-    results = [(CLASS_NAMES[i], float(topk.values[idx]*100)) for idx,i in enumerate(topk.indices)]
-    return results
+    return [(CLASS_NAMES[i], float(topk.values[idx]*100)) for idx,i in enumerate(topk.indices)]
 
 # ==================================================
 # HEADER
