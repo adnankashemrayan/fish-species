@@ -8,6 +8,12 @@ from PIL import Image
 import base64
 import os
 
+try:
+    from huggingface_hub import hf_hub_download
+    HF_AVAILABLE = True
+except:
+    HF_AVAILABLE = False
+
 # ==================================================
 # PAGE CONFIG
 # ==================================================
@@ -126,23 +132,43 @@ def load_models():
     encoder_path = os.path.join(BASE_DIR, "models", "fish_simclr_encoder.pt")
     classifier_path = os.path.join(BASE_DIR, "models", "fish_final_model.pt")
 
-    if not os.path.exists(encoder_path) or not os.path.exists(classifier_path):
-        st.error("❌ Model files missing! Please add them to 'models/' folder.")
+    encoder_model = SimCLR().to(DEVICE)
+    classifier = nn.Linear(2048, len(CLASS_NAMES)).to(DEVICE)
+
+    # --- Try local first ---
+    if os.path.exists(encoder_path) and os.path.exists(classifier_path):
+        st.info("✅ Loading models from local 'models/' folder...")
+        encoder_state = torch.load(encoder_path, map_location=DEVICE)
+        encoder_model.encoder.load_state_dict(encoder_state, strict=False)
+        cls_state = torch.load(classifier_path, map_location=DEVICE)
+        classifier.load_state_dict(cls_state, strict=False)
+    # --- Try HF download ---
+    elif HF_AVAILABLE:
+        st.info("⚡ Downloading models from HuggingFace...")
+        try:
+            encoder_path = hf_hub_download(
+                repo_id="Riad77/fish-species-classifier",
+                filename="fish_simclr_encoder.pt"
+            )
+            classifier_path = hf_hub_download(
+                repo_id="Riad77/fish-species-classifier",
+                filename="fish_final_model.pt"
+            )
+            encoder_state = torch.load(encoder_path, map_location=DEVICE)
+            encoder_model.encoder.load_state_dict(encoder_state, strict=False)
+            cls_state = torch.load(classifier_path, map_location=DEVICE)
+            classifier.load_state_dict(cls_state, strict=False)
+        except Exception as e:
+            st.error(f"❌ Cannot download models: {str(e)}")
+            st.stop()
+    else:
+        st.error("❌ Model files missing! Add to 'models/' folder or enable HF download.")
         st.stop()
 
-    # --- Encoder
-    encoder_model = SimCLR()
-    state = torch.load(encoder_path, map_location=DEVICE)
-    encoder_model.encoder.load_state_dict(state, strict=False)
-    encoder_model.eval().to(DEVICE)
-
-    # --- Classifier
-    cls_state = torch.load(classifier_path, map_location=DEVICE)
-    classifier = nn.Linear(2048, len(CLASS_NAMES)).to(DEVICE)
-    classifier.load_state_dict(cls_state, strict=False)
+    encoder_model.eval()
     classifier.eval()
 
-    # --- Warm-up
+    # Warm-up
     with torch.no_grad():
         dummy = torch.randn(1,3,224,224).to(DEVICE)
         feat = encoder_model.encoder(dummy).view(1,-1)
