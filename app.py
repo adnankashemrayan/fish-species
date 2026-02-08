@@ -1,9 +1,12 @@
 import streamlit as st
 import torch
 import torch.nn as nn
-from torchvision import transforms, models
+import torch.nn.functional as F
+import torchvision
+from torchvision import transforms
 from PIL import Image
 from huggingface_hub import hf_hub_download
+import json
 import base64
 
 # ==================================================
@@ -17,78 +20,30 @@ st.set_page_config(
 )
 
 # ==================================================
-# GLOBAL STYLES (FAIL-SAFE)
+# GLOBAL STYLES
 # ==================================================
-def inject_css(image_path):
+def inject_css(image_path=""):
     try:
         with open(image_path, "rb") as f:
             encoded = base64.b64encode(f.read()).decode()
-
         bg_css = f"""
         background:
           linear-gradient(rgba(0,0,0,0.72), rgba(0,0,0,0.72)),
           url("data:image/png;base64,{encoded}");
         """
-    except Exception:
-        bg_css = """
-        background:
-          linear-gradient(135deg, #0f2027, #203a43, #2c5364);
-        """
+    except:
+        bg_css = "background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);"
 
-    st.markdown(
-        f"""
-        <style>
-        html, body {{
-            font-family: 'Inter', sans-serif;
-        }}
-
-        .stApp {{
-            {bg_css}
-            background-size: cover;
-            background-position: center;
-            background-attachment: fixed;
-        }}
-
-        .block-container {{
-            max-width: 800px;
-            background: rgba(255,255,255,0.12);
-            backdrop-filter: blur(24px);
-            padding: 3.6rem;
-            border-radius: 28px;
-            border: 1px solid rgba(255,255,255,0.25);
-            box-shadow: 0 35px 100px rgba(0,0,0,0.65);
-        }}
-
-        button {{
-            width: 100%;
-            height: 3.5em;
-            border-radius: 18px !important;
-            font-size: 18px !important;
-            font-weight: 600;
-            background: linear-gradient(135deg,#00c6ff,#0072ff);
-            color: white !important;
-            border: none;
-        }}
-
-        button:hover {{
-            transform: scale(1.03);
-            transition: 0.25s ease;
-        }}
-
-        section[data-testid="stFileUploader"] {{
-            background: rgba(0,0,0,0.45);
-            border-radius: 18px;
-            padding: 22px;
-            border: 1px dashed rgba(255,255,255,0.45);
-        }}
-
-        .stProgress > div > div {{
-            background-image: linear-gradient(90deg,#00c6ff,#0072ff);
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+    st.markdown(f"""
+    <style>
+    html, body {{ font-family: 'Inter', sans-serif; }}
+    .stApp {{ {bg_css} background-size: cover; background-position: center; background-attachment: fixed; }}
+    .block-container {{ max-width: 800px; background: rgba(255,255,255,0.12); backdrop-filter: blur(24px); padding: 3.6rem; border-radius: 28px; border: 1px solid rgba(255,255,255,0.25); box-shadow: 0 35px 100px rgba(0,0,0,0.65); }}
+    button {{ width: 100%; height: 3.5em; border-radius: 18px !important; font-size: 18px !important; font-weight: 600; background: linear-gradient(135deg,#00c6ff,#0072ff); color: white !important; border: none; }}
+    button:hover {{ transform: scale(1.03); transition: 0.25s ease; }}
+    section[data-testid="stFileUploader"] {{ background: rgba(0,0,0,0.45); border-radius: 18px; padding: 22px; border: 1px dashed rgba(255,255,255,0.45); }}
+    .stProgress > div > div {{ background-image: linear-gradient(90deg,#00c6ff,#0072ff); }}
+    </style>""", unsafe_allow_html=True)
 
 inject_css("assets/watermark.png")
 
@@ -100,16 +55,12 @@ with st.sidebar:
     language = st.selectbox("🌐 Language", ["English", "বাংলা"])
     enable_explain = st.checkbox("🔬 Enable Explainability (Grad-CAM)", False)
     enable_report = st.checkbox("📄 Enable PDF Report", False)
-
     st.markdown("""
     ---
     **Model**
-    - SimCLR (Self-Supervised)
-    - ResNet50 Encoder
-    - Linear / Custom Classifier
-
-    **Developer**
-    **Riad**
+    - SimCLR Encoder
+    - Linear Classifier
+    - Self-Supervised Features
     """)
 
 # ==================================================
@@ -134,120 +85,101 @@ TEXT = {
 T = TEXT[language]
 
 # ==================================================
-# CONFIG
+# DEVICE
 # ==================================================
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-CLASS_NAMES = [
-    "Baim","Bata","Batasio (Tenra)","Chitol","Croaker (Poya)",
-    "Hilsha","Kajoli","Meni","Pabda","Poli","Puti",
-    "Rita","Rui","Rupchada","Silver Carp","Tilapia",
-    "Common Carp","Kaikka","Koral","Shrimp","Unknown"
-]
+# ==================================================
+# CLASS NAMES - HF JSON
+# ==================================================
+@st.cache_resource
+def load_class_names():
+    path = hf_hub_download(
+        repo_id="Riad77/fish-species-classifier",
+        filename="class_names.json",
+        repo_type="dataset"
+    )
+    with open(path, "r") as f:
+        names = json.load(f)
+    return names
 
-FEATURE_DIM = 2048
+CLASS_NAMES = load_class_names()
 
 # ==================================================
-# LOAD MODELS (ULTRA ROBUST)
+# SIMCLR ENCODER CLASS
+# ==================================================
+class SimCLR(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.encoder = torchvision.models.resnet50(weights=None)
+        self.encoder.fc = nn.Identity()
+        self.projector = nn.Sequential(
+            nn.Linear(2048, 512),
+            nn.ReLU(),
+            nn.Linear(512, 128)
+        )
+
+    def forward(self, x):
+        h = self.encoder(x)
+        z = self.projector(h)
+        return F.normalize(z, dim=1)
+
+# ==================================================
+# LOAD MODELS
 # ==================================================
 @st.cache_resource(show_spinner=False)
 def load_models():
-    # -------- Download from HF DATASET repo --------
-    encoder_path = hf_hub_download(
+    # --- Encoder
+    encoder_ckpt = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
         filename="fish_simclr_encoder.pt",
         repo_type="dataset"
     )
+    encoder_model = SimCLR()
+    state = torch.load(encoder_ckpt, map_location=DEVICE)
+    encoder_model.encoder.load_state_dict(state, strict=False)
+    encoder_model.eval().to(DEVICE)
 
-    classifier_path = hf_hub_download(
+    # --- Linear classifier
+    cls_ckpt = hf_hub_download(
         repo_id="Riad77/fish-species-classifier",
         filename="fish_final_model.pt",
         repo_type="dataset"
     )
-
-    # -------- Encoder --------
-    base = models.resnet50(weights=None)
-    encoder = nn.Sequential(*list(base.children())[:-1]).to(DEVICE)
-
-    enc_ckpt = torch.load(encoder_path, map_location=DEVICE)
-    clean_state = {}
-    for k, v in enc_ckpt.items():
-        k = k.replace("encoder.", "").replace("backbone.", "").replace("module.", "")
-        clean_state[k] = v
-
-    encoder.load_state_dict(clean_state, strict=False)
-    encoder.eval()
-
-    # -------- Classifier (AUTO-INFER SHAPE) --------
-    cls_ckpt = torch.load(classifier_path, map_location=DEVICE)
-
-    # Case: full model saved
-    if isinstance(cls_ckpt, nn.Module):
-        classifier = cls_ckpt.to(DEVICE)
-
-    else:
-        # extract state_dict
-        if isinstance(cls_ckpt, dict):
-            if "state_dict" in cls_ckpt:
-                state = cls_ckpt["state_dict"]
-            elif "model_state" in cls_ckpt:
-                state = cls_ckpt["model_state"]
-            else:
-                state = cls_ckpt
-        else:
-            state = cls_ckpt
-
-        # infer output features
-        out_features = None
-        for k, v in state.items():
-            if v.ndim == 2:
-                out_features = v.shape[0]
-                break
-
-        if out_features is None:
-            raise RuntimeError("Cannot infer classifier output size")
-
-        classifier = nn.Linear(FEATURE_DIM, out_features).to(DEVICE)
-        classifier.load_state_dict(state, strict=False)
-
+    cls_state = torch.load(cls_ckpt, map_location=DEVICE)
+    classifier = nn.Linear(2048, len(CLASS_NAMES)).to(DEVICE)
+    classifier.load_state_dict(cls_state, strict=False)
     classifier.eval()
 
-    # -------- Warm-up --------
+    # --- Warm-up
     with torch.no_grad():
-        dummy = torch.randn(1, 3, 224, 224).to(DEVICE)
-        _ = classifier(encoder(dummy).view(1, -1))
+        dummy = torch.randn(1,3,224,224).to(DEVICE)
+        feat = encoder_model.encoder(dummy).view(1,-1)
+        _ = classifier(feat)
 
-    return encoder, classifier
+    return encoder_model, classifier
 
-
-encoder, classifier = load_models()
+encoder_model, classifier = load_models()
 
 # ==================================================
-# TRANSFORM
+# TRANSFORMS
 # ==================================================
 transform = transforms.Compose([
     transforms.Resize((224,224)),
     transforms.ToTensor(),
-    transforms.Normalize(
-        [0.485,0.456,0.406],
-        [0.229,0.224,0.225]
-    )
+    transforms.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])
 ])
 
 # ==================================================
-# PREDICTION
+# PREDICTION FUNCTION
 # ==================================================
 def predict_topk(img, k=3):
-    img = transform(img).unsqueeze(0).to(DEVICE)
+    img_tensor = transform(img).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        feat = encoder(img).view(1,-1)
+        feat = encoder_model.encoder(img_tensor).view(1,-1)
         probs = torch.softmax(classifier(feat), dim=1)[0]
-
     topk = torch.topk(probs, k)
-    results = []
-    for idx, i in enumerate(topk.indices):
-        label = CLASS_NAMES[i] if i < len(CLASS_NAMES) else f"Class {i}"
-        results.append((label, float(topk.values[idx] * 100)))
+    results = [(CLASS_NAMES[i], float(topk.values[idx]*100)) for idx,i in enumerate(topk.indices)]
     return results
 
 # ==================================================
@@ -255,8 +187,8 @@ def predict_topk(img, k=3):
 # ==================================================
 st.markdown(f"""
 <div style="text-align:center;">
-    <h1 style="font-size:48px;">🐟 {T["title"]}</h1>
-    <p style="font-size:18px; color:#dddddd;">{T["subtitle"]}</p>
+    <h1 style="font-size:48px;">🐟 {T['title']}</h1>
+    <p style="font-size:18px; color:#dddddd;">{T['subtitle']}</p>
 </div>
 <hr style="margin:32px 0;">
 """, unsafe_allow_html=True)
@@ -272,11 +204,10 @@ if file:
         st.image(image, caption="Uploaded Image", use_column_width=True)
 
         if st.button(T["analyze"]):
-            with st.spinner("Running deep visual analysis..."):
+            with st.spinner("Running analysis..."):
                 results = predict_topk(image)
 
             st.markdown(f"## 🧠 {T['results']}")
-
             for label, conf in results:
                 st.markdown(f"**{label}**")
                 st.progress(int(conf))
@@ -284,7 +215,6 @@ if file:
 
             if enable_explain:
                 st.info("🔬 Grad-CAM enabled (hook ready).")
-
             if enable_report:
                 st.info("📄 PDF report enabled (hook ready).")
 
