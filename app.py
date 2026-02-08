@@ -6,6 +6,7 @@ import torchvision
 from torchvision import transforms
 from PIL import Image
 import base64
+import os
 
 # ==================================================
 # PAGE CONFIG
@@ -88,7 +89,7 @@ T = TEXT[language]
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ==================================================
-# MANUAL CLASS NAMES
+# CLASS NAMES
 # ==================================================
 CLASS_NAMES = [
     "Baim","Bata","Batasio(Tenra)","Chitul","Croaker(Poya)",
@@ -98,7 +99,7 @@ CLASS_NAMES = [
 ]
 
 # ==================================================
-# SIMCLR ENCODER CLASS
+# SIMCLR ENCODER
 # ==================================================
 class SimCLR(nn.Module):
     def __init__(self):
@@ -121,15 +122,21 @@ class SimCLR(nn.Module):
 # ==================================================
 @st.cache_resource(show_spinner=False)
 def load_models():
+    BASE_DIR = os.path.dirname(__file__)
+    encoder_path = os.path.join(BASE_DIR, "models", "fish_simclr_encoder.pt")
+    classifier_path = os.path.join(BASE_DIR, "models", "fish_final_model.pt")
+
+    if not os.path.exists(encoder_path) or not os.path.exists(classifier_path):
+        st.error("❌ Model files missing! Please add them to 'models/' folder.")
+        st.stop()
+
     # --- Encoder
-    encoder_path = "models/fish_simclr_encoder.pt"
     encoder_model = SimCLR()
     state = torch.load(encoder_path, map_location=DEVICE)
     encoder_model.encoder.load_state_dict(state, strict=False)
     encoder_model.eval().to(DEVICE)
 
-    # --- Linear classifier
-    classifier_path = "models/fish_final_model.pt"
+    # --- Classifier
     cls_state = torch.load(classifier_path, map_location=DEVICE)
     classifier = nn.Linear(2048, len(CLASS_NAMES)).to(DEVICE)
     classifier.load_state_dict(cls_state, strict=False)
@@ -155,7 +162,7 @@ transform = transforms.Compose([
 ])
 
 # ==================================================
-# PREDICTION FUNCTION
+# PREDICTION
 # ==================================================
 def predict_topk(img, k=3):
     img_tensor = transform(img).unsqueeze(0).to(DEVICE)
